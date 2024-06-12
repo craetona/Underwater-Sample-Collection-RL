@@ -5,16 +5,15 @@ import matplotlib.pyplot as plt
 import pickle
 import os
 
-TERMINAL_FLAG = 0
-
 class Underwater_Grid:
     def __init__(self, load_existing=True):
         print("Initializing Underwater_Grid")
+        self.terminal_flag = 0
         self.grid_width = 10
         self.grid_height = 10
         self.actions = ['left', 'right', 'up', 'down', 'collect', 'deposit']
         self.tide_region_id = [(0, 4), (4, 6), (5, 5), (2, 0), (2, 6),
-                               (8, 3), (5, 3), (5, 0), (0, 4), (1, 4),
+                               (8, 3), (5, 3), (5, 0), (1, 3), (1, 4),
                                (1, 9), (2, 7), (8, 9), (7, 1), (9, 6),
                                (0, 6), (7, 6), (2, 5), (2, 2), (6, 0)]
         self.sample_id = {'one': (1, 6), 'two': (3, 0), 'three': (5, 7), 'four': (7, 2)}
@@ -72,12 +71,14 @@ class Underwater_Grid:
             for action in self.actions:
                 if (state[0], state[1]) in self.tide_region_id:
                     self.R[(state, action)] = -10
+                elif (state[0], state[1]) in self.sample_id.values():
+                    self.R[(state, action)] = 5
                 elif action == 'deposit' and state in self.goal_id:
                     self.R[(state, action)] = 25 * sum(state[3])
                 elif action == 'collect' and (state[0], state[1]) in self.sample_id.values():
                     sample_index = list(self.sample_id.values()).index((state[0], state[1]))
                     if state[3][sample_index] == 0:
-                        self.R[(state, action)] = 10
+                        self.R[(state, action)] = 15
                     else:
                         self.R[(state, action)] = -1
                 else:
@@ -172,7 +173,7 @@ class Underwater_Grid:
         
         elif action == 'deposit':
             if state in self.goal_id:
-                TERMINAL_FLAG = 1
+                self.terminal_flag = 1
             succ.append(((state[0], state[1], new_battery, state[3]), 1.0))
             return succ
         
@@ -181,7 +182,7 @@ class Underwater_Grid:
         random_value = random.uniform(0, 1)
         prob_sum = 0
         if state in self.goal_id:
-            return state
+            return None
         
         state_index = self.states.index(state)
         action_index = self.actions.index(action)
@@ -205,10 +206,15 @@ class Underwater_Grid:
         best_Q = float('-inf')
         best_action = None
         idx = self.states.index(state)
+
         for a, action in enumerate(self.actions):
+            if action == 'collect' and (state[0], state[1]) not in self.sample_id.values():
+                continue
+            if action == 'deposit' and state not in self.goal_id:
+                continue
             if self.P[idx][a] is not None:
                 applicable_actions.append(action)
-                if self.Q[idx][a] > best_Q:
+                if self.Q[idx][a] >= best_Q:
                     best_Q = self.Q[idx][a]
                     best_action = action
 
@@ -225,7 +231,7 @@ class Underwater_Grid:
             prob += pi_s_a[self.actions.index(action)]
             if prob >= random_value:
                 return action
-    
+
     # monte carlo with epsilon decay to try and maximize performance
     def every_visit_monte_carlo(self, num_episodes, epsilon, epsilon_decrement, decrement_frequency):
         returns_sum = {}
@@ -241,7 +247,7 @@ class Underwater_Grid:
         for episode in range(num_episodes):
             if episode % decrement_frequency == 0:
                 epsilon = max(0.01, epsilon - epsilon_decrement)
-
+            
             print("***************************** Episode:", episode + 1)
             start_time = timeit.default_timer()
             episode_data = []
@@ -257,8 +263,9 @@ class Underwater_Grid:
                 total_reward += reward
                 if next_state is None:
                     break
-                if TERMINAL_FLAG:
+                if self.terminal_flag:
                     print(f"Goal state reached: {state}")
+                    self.terminal_flag = 0
                     break
                 state = next_state
 
@@ -267,19 +274,11 @@ class Underwater_Grid:
             for t in range(len(episode_data) - 1, -1, -1):
                 state, action, reward = episode_data[t]
                 G = reward + self.gamma * G
-                if (state, action) not in [(x[0], x[1]) for x in episode_data[:t]]:
-                    returns_sum[(state, action)] += G
-                    returns_count[(state, action)] += 1
-                    self.Q[self.states.index(state)][self.actions.index(action)] = returns_sum[(state, action)] / returns_count[(state, action)]
+                returns_sum[(state, action)] += G
+                returns_count[(state, action)] += 1
+                self.Q[self.states.index(state)][self.actions.index(action)] = returns_sum[(state, action)] / returns_count[(state, action)]
 
-            for state, action, _ in episode_data:
-                best_action = np.argmax(self.Q[self.states.index(state)])
-                for a in self.actions:
-                    if a == self.actions[best_action]:
-                        self.pi[self.states.index(state)][self.actions.index(a)] = 1 - epsilon + epsilon / len(self.actions)
-                    else:
-                        self.pi[self.states.index(state)][self.actions.index(a)] = epsilon / len(self.actions)
-            runtimes.append(start_time - timeit.default_timer())
+            runtimes.append(timeit.default_timer() - start_time)
         
         return total_rewards, runtimes
     
@@ -301,7 +300,7 @@ class Underwater_Grid:
             episode_data = []
             state = self.s0
             total_reward = 0
-            while True:
+            while state not in self.goal_id or self.terminal_flag == 0:
                 action = self.get_epsilon_greedy_action(state, epsilon)
                 if action is None:
                     break
@@ -311,9 +310,12 @@ class Underwater_Grid:
                 total_reward += reward
                 if next_state is None:
                     break
-                if TERMINAL_FLAG:
+                if self.terminal_flag == 1:
                     print(f"Goal state reached: {state}")
+                    self.terminal_flag = 0
                     break
+                if state in self.goal_id and state == next_state:
+                    print(f"state: {state}, action: {action}")
                 state = next_state
 
             total_rewards.append(total_reward)
@@ -321,68 +323,77 @@ class Underwater_Grid:
             for t in range(len(episode_data) - 1, -1, -1):
                 state, action, reward = episode_data[t]
                 G = reward + self.gamma * G
-                if (state, action) not in [(x[0], x[1]) for x in episode_data[:t]]:
-                    returns_sum[(state, action)] += G
-                    returns_count[(state, action)] += 1
-                    self.Q[self.states.index(state)][self.actions.index(action)] = returns_sum[(state, action)] / returns_count[(state, action)]
+                returns_sum[(state, action)] += G
+                returns_count[(state, action)] += 1
+                self.Q[self.states.index(state)][self.actions.index(action)] = returns_sum[(state, action)] / returns_count[(state, action)]
 
-            for state, action, _ in episode_data:
-                best_action = np.argmax(self.Q[self.states.index(state)])
-                for a in self.actions:
-                    if a == self.actions[best_action]:
-                        self.pi[self.states.index(state)][self.actions.index(a)] = 1 - epsilon + epsilon / len(self.actions)
-                    else:
-                        self.pi[self.states.index(state)][self.actions.index(a)] = epsilon / len(self.actions)
-            runtimes.append(start_time - timeit.default_timer())
+            runtimes.append(timeit.default_timer() - start_time)
         
         return total_rewards, runtimes
     
-    def value_iteration(self, theta=1e-6, max_iterations=1000):
-        total_rewards = []
-        
-        for i in range(max_iterations):
-            delta = 0
-            total_reward = 0
-            for s, state in enumerate(self.states):
-                v = self.V[s]
-                max_value = float('-inf')
-                for a, action in enumerate(self.actions):
-                    q_value = 0
-                    successors = self.P[s][a]
-                    if successors is not None:
-                        for next_state, prob in successors:
-                            reward = self.get_reward(state, action)
-                            next_state_index = self.states.index(next_state)
-                            q_value += prob * (reward + self.gamma * self.V[next_state_index])
-                    if q_value > max_value:
-                        max_value = q_value
-                self.V[s] = max_value
-                delta = max(delta, abs(v - self.V[s]))
-                total_reward += self.V[s]
+    def qvalue(self, state_idx, action_idx):
+            initialize_bestQ = -10000
+            qaction = 0
+            succ_list = self.P[state_idx][action_idx]
+            if succ_list is not None:
+                reward = self.get_reward(self.states[state_idx], self.actions[action_idx])
+
+                qaction += reward
+                for succ in succ_list:
+                    succ_state = succ[0]
+                    succ_state_id = self.states.index(succ_state)
+                    prob = succ[1]
+
+                    qaction += prob * self.gamma * self.V[succ_state_id]
+                return qaction
+            else:
+                return initialize_bestQ
+
+    def value_iteration(self):
+        max_trials = 10000
+        epsilon = 0.000001
+        initialize_bestQ = -10000
+        curr_iter = 0
+        bestAction = np.full((len(self.states)), -1)
+        start_time = timeit.default_timer()
+        while curr_iter < max_trials:
+            print("CURR ITER: ", curr_iter, "---------------------------------")
+            max_residual = 0
+            curr_iter += 1
             
-            total_rewards.append(total_reward)
-            
-            if delta < theta:
+            for state_idx, state in enumerate(self.states):
+                if state_idx % 10000 == 0:
+                    print(f"Updated {state_idx} states out of {len(self.states)}")
+                if state[2] == 0:
+                    continue
+
+                if state in self.goal_id:
+                    bestAction[state_idx] = self.actions.index('deposit')
+                    self.V[state_idx] = self.get_reward(state, 'deposit')
+                    continue
+
+                bestQ = initialize_bestQ
+
+                for na, action in enumerate(self.actions):
+                    if self.P[state_idx][na] is None:
+                        continue
+
+                    qaction = max(initialize_bestQ, self.qvalue(state_idx, na))
+                    self.Q[state_idx][na] = qaction
+
+                    if qaction > bestQ:
+                        bestQ = qaction
+                        bestAction[state_idx] = na
+
+                residual = abs(bestQ - self.V[state_idx])
+                self.V[state_idx] = bestQ
+                max_residual = max(max_residual, residual)
+
+            if max_residual < epsilon:
                 break
 
-        for s, state in enumerate(self.states):
-            max_value = float('-inf')
-            best_action = None
-            for a, action in enumerate(self.actions):
-                q_value = 0
-                successors = self.P[s][a]
-                if successors is not None:
-                    for next_state, prob in successors:
-                        reward = self.get_reward(state, action)
-                        next_state_index = self.states.index(next_state)
-                        q_value += prob * (reward + self.gamma * self.V[next_state_index])
-                if q_value > max_value:
-                    max_value = q_value
-                    best_action = a
-            self.Q[s] = [0] * len(self.actions)
-            self.Q[s][best_action] = max_value
-        
-        return total_rewards
+        self.policy = bestAction
+        print('Time taken to solve (seconds): ', (timeit.default_timer() - start_time) / 60, "minutes")
 
     def save_policy(self, filename):
         state = self.s0
@@ -402,12 +413,12 @@ all_rewards = []
 best_rewards = []
 best_runtimes = []
 best_epsilon = 0
-epsilons = np.linspace(0.01, 0.9, 20)
+epsilons = np.linspace(0.01, 0.9, 10)
 
 for epsilon in epsilons:
     print(f"Testing epsilon {epsilon}")
     grid = Underwater_Grid()
-    rewards, runtimes = grid.monte_carlo(3000, epsilon)
+    rewards, runtimes = grid.monte_carlo(2000, epsilon)
     if rewards:
         avg_reward = np.mean(rewards)
         print(f"Epsilon {epsilon} average reward: {avg_reward}")
@@ -430,12 +441,12 @@ plt.xlabel("Episode")
 plt.ylabel("Total Reward")
 plt.title("Monte Carlo Total Reward per Episode")
 plt.grid(True)
-plt.show()
+plt.savefig("MC_parameter_search.png")
 
 
 # Monte Carlo with epsilon decay
 grid = Underwater_Grid()
-rewards, runtimes = grid.every_visit_monte_carlo(10000, 0.8, 0.18, 1500)
+rewards, runtimes = grid.every_visit_monte_carlo(20000, 0.8, 0.18, 4500)
 avg_reward = np.mean(rewards)
 print(f"Average reward: {avg_reward}")
 best_rewards = rewards
@@ -448,7 +459,7 @@ plt.xlabel("Episode")
 plt.ylabel("Total Reward")
 plt.title("Monte Carlo Total Reward per Episode")
 plt.grid(True)
-plt.show()
+plt.savefig("MC_epsilon_decay.png")
 
 
 # Run value iteration and save the learned policy
@@ -462,4 +473,4 @@ plt.xlabel("Iteration")
 plt.ylabel("Total Reward")
 plt.title("Value Iteration Total Reward Accumulated Over Time")
 plt.grid(True)
-plt.show()
+plt.savefig("VI.png")
